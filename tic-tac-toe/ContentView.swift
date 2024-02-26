@@ -3,55 +3,97 @@ import SwiftUI
 
 // Main view of the app
 struct ContentView: View {
+    @State private var currentView: CurrentView = .mainSelection
+
     var body: some View {
-        MainView()
-        .padding()
+        Group {
+            switch currentView {
+            case .mainSelection:
+                MainSelectionView { selectedGameMode in
+                    currentView = .selectionView(gameMode: selectedGameMode)
+                }
+            case .selectionView(let gameMode):
+                SelectionView { selectedSymbol in
+                    currentView = .gameView(gameMode: gameMode, initialSymbol: selectedSymbol)
+                }
+            case .gameView(let gameMode, let initialSymbol):
+                MainView(initialSymbol: initialSymbol, gameMode: gameMode) {
+                    currentView = .mainSelection
+                }
+            }
+        }
+    }
+}
+
+
+enum CurrentView {
+    case mainSelection
+    case selectionView(gameMode: GameMode)
+    case gameView(gameMode: GameMode, initialSymbol: CellState)
+}
+
+
+enum GameMode {
+    case playerVsPlayer, playerVsComputer
+}
+
+
+// Main selection screen
+struct MainSelectionView: View {
+    var onGameModeSelected: (GameMode) -> Void
+
+    var body: some View {
+        VStack(spacing: 30) {
+            TitleText(text: "Play Against..", fontSize: 35)
+            Button("Player") {
+                onGameModeSelected(.playerVsPlayer)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+
+            Button("Computer") {
+                onGameModeSelected(.playerVsComputer)
+            }
+            .buttonStyle(PrimaryButtonStyle())
+        }
     }
 }
 
 
 // Represents the main screen of the game
 struct MainView: View {
-    @State private var isGridVisible = false
-    @State private var chosenSymbol: CellState = .empty
+    var initialSymbol: CellState
+    var gameMode: GameMode
+    var onReset: () -> Void
 
     var body: some View {
-        VStack {
-            if isGridVisible {
-                gameView
-            } else {
-                selectionView
-            }
-        }
+        GameGridView(initialSymbol: initialSymbol, gameMode: gameMode, onReset: onReset)
     }
-    
-    // View for the Tic-Tac-Toe game
-    private var gameView: some View {
-        GameGridView(initialSymbol: chosenSymbol, onReset: { isGridVisible = false })
-    }
+}
 
-    // View for selecting X or O
-    private var selectionView: some View {
-        SelectionView(onXSelected: { selectSymbol(.x) }, onOSelected: { selectSymbol(.o) })
-    }
 
-    // Updates the symbol and shows the game grid
-    private func selectSymbol(_ symbol: CellState) {
-        chosenSymbol = symbol
-        isGridVisible = true
+// Main selection buttons
+struct PrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Self.Configuration) -> some View {
+        configuration.label
+            .padding()
+            .font(.title)
+            .frame(width: 200, height: 80)
+            .background(Color.black)
+            .foregroundColor(.white)
+            .cornerRadius(20)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
     }
 }
 
 
 // View for selecting either X or O
 struct SelectionView: View {
-    var onXSelected: () -> Void
-    var onOSelected: () -> Void
+    var onSymbolSelected: (CellState) -> Void
 
     var body: some View {
         VStack {
-            TitleText(text: "Choose your symbol")
-            SymbolButtonRow(onXSelected: onXSelected, onOSelected: onOSelected)
+            TitleText(text: "Choose your symbol", fontSize: 30)
+            SymbolButtonRow(onXSelected: { onSymbolSelected(.x) }, onOSelected: { onSymbolSelected(.o) })
         }
     }
 }
@@ -74,11 +116,11 @@ struct SymbolButtonRow: View {
 // View for displaying the title text
 struct TitleText: View {
     var text: String
+    var fontSize: CGFloat
 
     var body: some View {
         Text(text)
-            .font(.title)
-            .padding()
+            .font(.system(size: fontSize))
     }
 }
 
@@ -102,10 +144,10 @@ extension Text {
     func symbolButtonStyle() -> some View {
         self
             .font(.largeTitle)
-            .frame(width: 100, height: 100)
+            .frame(width: 120, height: 120)
             .foregroundColor(.white)
             .background(Color.black)
-            .cornerRadius(50)
+            .cornerRadius(60)
     }
 }
 
@@ -115,16 +157,19 @@ enum CellState {
     case empty, x, o
 }
 
+
 // View for the Tic-Tac-Toe grid
 struct GameGridView: View {
     @State private var cellStates = Array(repeating: CellState.empty, count: 9)
     @State private var currentSymbol: CellState
     @State private var gameState = GameState.active
-    
-    var onReset: () -> Void
+    @State private var isComputerThinking = false
+    let gameMode: GameMode
+    let onReset: () -> Void
 
-    init(initialSymbol: CellState, onReset: @escaping () -> Void) {
+    init(initialSymbol: CellState, gameMode: GameMode, onReset: @escaping () -> Void) {
         _currentSymbol = State(initialValue: initialSymbol)
+        self.gameMode = gameMode
         self.onReset = onReset
     }
 
@@ -136,46 +181,79 @@ struct GameGridView: View {
             ResetButton(action: resetGame)
         }
         .padding()
+        .onAppear(perform: performComputerFirstMoveIfNeeded)
     }
 
-    // Generates the grid for the game
     private var gameGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            ForEach(0..<9, id: \.self) { index in
-                GridCell(state: cellStates[index], action: { updateCell(at: index) })
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 10) {
+            ForEach(0..<9) { index in
+                GridCell(state: cellStates[index]) { updateCell(at: index) }
             }
         }
         .disabled(gameState != .active)
     }
 
-    // Displays text based on the current game state
     private var gameStateText: some View {
-        Group {
-            if gameState != .active {
-                Text(gameState.text)
-                    .font(.title)
-                    .padding()
+        Text(gameState.text)
+            .font(.title)
+            .padding()
+            .opacity(gameState != .active ? 1 : 0)
+    }
+
+    private func updateCell(at index: Int) {
+        guard gameState == .active, cellStates[index] == .empty, !isComputerThinking else { return }
+        
+        cellStates[index] = currentSymbol
+        checkForWinner()
+        toggleCurrentSymbol()
+        
+        if gameMode == .playerVsComputer {
+            isComputerThinking = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.computerMove()
+                self.isComputerThinking = false
             }
         }
     }
 
-    // Updates the cell and checks for a winner or draw
-    private func updateCell(at index: Int) {
-        guard gameState == .active else { return }
-        
-        if cellStates[index] == .empty {
-            cellStates[index] = currentSymbol
+    private func computerMove() {
+        guard gameMode == .playerVsComputer, gameState == .active else { return }
+
+        if let randomIndex = cellStates.indices.filter({ cellStates[$0] == .empty }).randomElement() {
+            cellStates[randomIndex] = currentSymbol
             checkForWinner()
-            currentSymbol = (currentSymbol == .x) ? .o : .x
+            toggleCurrentSymbol()
         }
     }
 
-    // Checks if there's a winner or if the game is a draw
+    private func performComputerFirstMoveIfNeeded() {
+        guard gameMode == .playerVsComputer, currentSymbol == .o else { return }
+        performComputerFirstMove()
+    }
+
+    private func performComputerFirstMove() {
+        isComputerThinking = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.currentSymbol = self.currentSymbol == .x ? .o : .x
+            self.computerMove()
+            self.isComputerThinking = false
+        }
+    }
+
+    private func toggleCurrentSymbol() {
+        currentSymbol = currentSymbol == .x ? .o : .x
+    }
+
+    private func processGameUpdate() {
+        checkForWinner()
+        currentSymbol = currentSymbol.opposite
+    }
+
     private func checkForWinner() {
-        let winPatterns = [
-            [0, 1, 2], [3, 4, 5], [6, 7, 8], // Rows
-            [0, 3, 6], [1, 4, 7], [2, 5, 8], // Columns
-            [0, 4, 8], [2, 4, 6]             // Diagonals
+        let winPatterns: [[Int]] = [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8],
+            [0, 3, 6], [1, 4, 7], [2, 5, 8],
+            [0, 4, 8], [2, 4, 6]
         ]
 
         for pattern in winPatterns {
@@ -192,11 +270,20 @@ struct GameGridView: View {
         }
     }
 
-    // Resets the game to its initial state
     private func resetGame() {
-        cellStates = Array(repeating: .empty, count: 9)
-        currentSymbol = .x
+        cellStates = .init(repeating: .empty, count: 9)
+        gameState = .active
         onReset()
+    }
+}
+
+extension CellState {
+    var opposite: CellState {
+        switch self {
+        case .x: return .o
+        case .o: return .x
+        default: return self
+        }
     }
 }
 
@@ -262,7 +349,6 @@ struct ResetButton: View {
 }
 
 
-// Custom styling extension for the reset button
 extension Button {
     func resetButtonStyle() -> some View {
         self
@@ -273,7 +359,6 @@ extension Button {
             .cornerRadius(5)
     }
 }
-
 
 
 #Preview {
